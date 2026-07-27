@@ -1,0 +1,108 @@
+# =============================================================================
+# FMRAG REQUIREMENTS — Python 3.10 (Ubuntu 22.04 Jammy), CPU-only
+# =============================================================================
+#
+# !! DO NOT run a bare `pip install -r requirements.txt` on a fresh venv. !!
+#
+# Why: pyhealth==1.1.4 only declares `torch>=1.8.0`, so if pip is allowed to
+# resolve it freely it will pull the LATEST GPU torch (2.12+cu130) plus a
+# ~6 GB NVIDIA CUDA stack — which breaks torch_scatter/torch_sparse (built
+# for torch 2.2) and segfaults torch_geometric. Several packages also drag
+# numpy back up to 2.x, which is ABI-incompatible with torch 2.2 and
+# segfaults on import.
+#
+# Use the phased install below (or just run ./install_deps.sh, which does
+# exactly this). The ORDER and the --no-deps flags are load-bearing, not
+# cosmetic — every one of them corresponds to a real failure hit during
+# deployment.
+#
+# -----------------------------------------------------------------------------
+# PHASE 0 — system build deps (apt, NOT pip) — needed to compile mysqlclient:
+#   sudo apt install -y python3.10-dev default-libmysqlclient-dev \
+#                       build-essential pkg-config
+#
+# PHASE 1 — numpy FIRST, pinned <2 (torch 2.2 needs NumPy 1.x ABI):
+#   pip install "numpy==1.26.4"
+#
+# PHASE 2 — torch CPU build, from the CPU index (NOT regular PyPI):
+#   pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 \
+#     --index-url https://download.pytorch.org/whl/cpu
+#
+# PHASE 3 — torch-geometric companions, matched to torch 2.2 + cpu:
+#   pip install torch-geometric==2.5.2 torch-scatter==2.1.2 torch-sparse==0.6.18 \
+#     -f https://data.pyg.org/whl/torch-2.2.0+cpu.html
+#
+# PHASE 4 — everything else, WITHOUT letting pip touch torch/numpy again:
+#   pip install -r requirements.txt --no-deps
+#   pip install -r requirements.txt          # second pass picks up sub-deps
+#                                             # of the phase-4 packages only,
+#                                             # torch/numpy already satisfied
+#
+# PHASE 5 — verify:
+#   python -c "import torch, torch_geometric, torch_scatter, torch_sparse, \
+#     yaml, gevent, flask, pyhealth, pandas, numpy; \
+#     print('torch:', torch.__version__, '| numpy:', numpy.__version__, \
+#     '| pandas:', pandas.__version__); print('ALL OK')"
+#   # MUST show: torch 2.2.0+cpu, numpy 1.26.4, pandas 1.5.3, ALL OK
+# =============================================================================
+
+# ── Core ML stack ────────────────────────────────────────────────────────────
+# torch/torchvision/torchaudio are installed in PHASE 2 from the CPU index,
+# NOT from here — listing the version for reference only. If a bare
+# `pip install -r` ever pulls torch off PyPI, it'll be the wrong (GPU) build.
+torch==2.2.0
+transformers==4.40.0
+peft==0.10.0
+accelerate==0.29.3
+datasets==2.19.0
+tokenizers==0.19.1
+safetensors==0.4.3
+
+# ── Graph ML ──────────────────────────────────────────────────────────────────
+# torch-geometric/scatter/sparse are installed in PHASE 3 from the PyG wheel
+# index so the compiled .so files match torch 2.2+cpu. Versions here for
+# reference/pinning only.
+networkx==3.3
+torch-geometric==2.5.2
+torch-scatter==2.1.2
+torch-sparse==0.6.18
+
+# ── EHR / Clinical ────────────────────────────────────────────────────────────
+# pyhealth is the package that tries to upgrade torch — ALWAYS install the
+# phase-4 batch with --no-deps first so pyhealth can't drag GPU torch in.
+pyhealth==1.1.4
+# pandas MUST stay <2 — pyhealth==1.1.4's own metadata requires pandas<2,>=1.3.2.
+pandas==1.5.3
+
+# ── Scientific stack ──────────────────────────────────────────────────────────
+# numpy is installed FIRST in PHASE 1 and MUST stay <2 (torch 2.2 ABI).
+# If anything bumps it to 2.x, re-pin: pip install "numpy<2" --force-reinstall
+numpy==1.26.4
+scikit-learn==1.4.2
+
+# ── Web / Infrastructure ──────────────────────────────────────────────────────
+Flask==3.0.3
+flask-login==0.6.3
+werkzeug==3.0.2
+gevent==24.2.1
+psutil==5.9.8
+requests==2.31.0
+PyYAML==6.0.1
+python-dotenv==1.0.1
+
+# ── RPC / System ──────────────────────────────────────────────────────────────
+zerorpc==0.6.3
+# mysqlclient compiles from source — needs PHASE 0 apt packages first,
+# or the build fails with "Python.h: No such file or directory".
+mysqlclient==2.2.4
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+tqdm==4.66.2
+bcrypt==4.1.3
+
+# ── NOT installed automatically (optional) ────────────────────────────────────
+# bitsandbytes — 8-bit quantisation to halve BioBERT RAM on CPU. Its latest
+# version requires torch>=2.3, which CONFLICTS with our pinned torch 2.2.0.
+# If you want it, install an older compatible build explicitly; otherwise the
+# code runs fine without it (model_setup.py handles its absence gracefully).
+# Leaving it out avoids the harmless-but-noisy pip conflict warning.

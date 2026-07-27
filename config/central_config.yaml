@@ -1,0 +1,54 @@
+# FMRAG central node configuration
+# Broker (CIPYZ offload decisions) + FL server (FedAvg) on the same machine
+# Copy to /etc/fmrag/central_config.yaml on the central VM
+# Default central IP in CIPYZ: 100.105.131.115
+
+# ── CIPYZ Broker ─────────────────────────────────────────────────────────────
+broker:
+  ip: "100.105.131.115"           # this machine's IP — must match FMRAG_NODE_IP
+  poll_interval_sec: 30        # seconds between cloudlet poll cycles
+
+resource_thresholds:
+  normal:   0.60               # resource_index >= 0.60 → can accept VMs freely
+  high:     0.40               # resource_index >= 0.40 → near limit
+  critical: 0.0                # resource_index <  0.40 → reject new VMs
+
+# ── FL Server ─────────────────────────────────────────────────────────────────
+server:
+  host: "0.0.0.0"
+  port: 8080
+  min_clients: 2               # wait for this many clients before aggregating
+  max_rounds: 50
+
+lora:
+  rank: 8
+  hidden_dim: 768              # BioBERT hidden size — do not change
+  lora_layers: [10, 11]        # transformer blocks to inject LoRA
+
+# ── KG completion (must match graphcare.num_nodes/num_rels in client_config.yaml) ──
+# If these don't match your clients' vocab size, federated KGC aggregation
+# silently does nothing (server skips aggregation when num_nodes is 0/wrong).
+kgc:
+  enabled: true
+  num_nodes: 1200              # MUST match graphcare.num_nodes in client_config.yaml
+  num_rels: 50                 # MUST match graphcare.num_rels in client_config.yaml
+  dim: 64                      # MUST match kgc.dim in client_config.yaml
+
+model:
+  biobert: "dmis-lab/biobert-base-cased-v1.2"
+  checkpoint_dir: "/var/fmrag/checkpoints/"
+  save_every_n_rounds: 5
+
+# ── Shared database ───────────────────────────────────────────────────────────
+database:
+  host: "${FMRAG_DB_HOST}"
+  user: "${FMRAG_DB_USER}"
+  pass: "${FMRAG_DB_PASS}"
+  name: "${FMRAG_DB_NAME}"
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging:
+  level: "INFO"
+  broker_log:    "/var/log/fmrag/broker.log"
+  fl_server_log: "/var/log/fmrag/fl_server.log"
+  monitor_log:   "/var/log/fmrag/monitor.log"

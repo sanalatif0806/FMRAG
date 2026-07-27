@@ -1,0 +1,138 @@
+# FMRAG client configuration
+# /etc/fmrag/client_config.yaml
+#
+# CPU MODE is the default — no changes needed for edge devices without GPU.
+# The system auto-detects hardware and scales accordingly.
+
+# ── To switch to real MIMIC-III demo data (direct loader, no GraphCare/UMLS) ──
+# Replace the `data:` block below with this one. The mimic_loader builds
+# patient graphs straight from the demo CSVs and labels in-hospital mortality
+# from ADMISSIONS.HOSPITAL_EXPIRE_FLAG. After first run, read the logged
+# "Vocabulary size: N codes" and set graphcare.num_nodes to N (max_visit=10).
+#data:
+#  dataset: "mimic3"
+#  task: "mortality"
+#  root: "/data/mimic-iii-demo"    # the extracted demo CSV folder (uppercase CSVs)
+#  processed_cache: "./data/cache/mimic3_demo_mortality.pkl"
+#  client_id: 0
+#  num_clients: 1
+#  partition: "iid"                # "iid" | "dirichlet" | "label_skew"
+
+
+data:
+  dataset: "mimic3"
+  task: "mortality"
+  root: "/data/mimic-iii-demo"
+  processed_cache: "./data/cache/mimic3_demo_mortality.pkl"
+  client_id: 0
+  num_clients: 1
+  partition: "iid"
+
+
+#data:
+#  dataset: "synthea"
+#  task: "mortality"
+#  root: "/data/synthea/csv/csv"
+#  processed_cache: "./data/cache/synthea_mortality.pkl"
+  # ── Federated data partitioning ────────────────────────────────────────
+  # Each client trains on a DISJOINT slice of patients. Set a distinct
+  # client_id per client (0,1,2,…) and the same num_clients everywhere.
+  # Override per-launch with env: FMRAG_CLIENT_ID, FMRAG_NUM_CLIENTS,
+  # FMRAG_PARTITION, FMRAG_DIRICHLET_ALPHA.
+ # client_id: 0
+ # num_clients: 1                  # 1 = no partition (whole dataset, as before)
+ # partition: "iid"                # "iid" | "dirichlet" (non-IID, tunable) | "label_skew" (hard non-IID)
+
+  # Full MIMIC-III (requires PhysioNet credentialing + signed DUA):
+  #   root: "/data/mimic-iii"
+  #   processed_cache: "./data/cache/mimic3_full_multitask.pkl"
+
+# ── per-client locally-observed adverse event data ("each user's input") ──
+# Optional: fold in this institution's own ADE-labeled visits on top of the
+# shared MIMIC cohort. See client/graphcare/user_ade_loader.py for the
+# required CSV schema. The CSV stays on this client — only FL deltas
+# computed from the combined local dataset are ever transmitted.
+user_data:
+  enabled: false
+  path: "/data/local/client_ade_cases.csv"
+
+model:
+  max_seq_len: 64                 # 64 for CPU (vs 128 for GPU) — 2x faster tokenisation
+
+# ── CPU mode settings (auto-applied when no GPU detected) ──────────────────
+cpu:
+  model_name: "distilbert-base-uncased"   # 66M params, 2x faster than BioBERT on CPU
+                                           # override: FMRAG_MODEL_NAME=dmis-lab/biobert-base-cased-v1.2
+  lora_rank: 4                             # 150 KB delta vs 400 KB (same FL round, less RAM)
+  local_epochs: 1                          # 1 epoch on CPU ≈ 15-45 min depending on dataset
+  batch_size: 4                            # fits in 4 GB RAM
+  grad_accum: 4                            # effective batch = 16
+  ewc_samples: 50                          # EWC Fisher estimation on 50 samples
+
+# ── GPU mode settings (auto-applied when GPU detected) ────────────────────
+gpu:
+  model_name: "dmis-lab/biobert-base-cased-v1.2"
+  lora_rank: 8
+  local_epochs: 3
+  batch_size: 16
+  grad_accum: 1
+  ewc_samples: 200
+
+graphcare:
+  num_nodes: 1335                 # MIMIC-III demo vocab (was 260 for Synthea)
+ # num_nodes: 260                  # Synthea vocab size (was 1200 for MIMIC)
+  num_rels: 2                     # Synthea uses only rel id 0
+  max_visit: 10
+  hidden_dim: 128
+  out_channels: 2
+  graphcare_layers: 2
+  ent2id_path: "./GraphCare-main/graphs/cond_proc_drug/CCSCM_CCSPROC_ATC3/ent2id.json"
+  rel2id_path: "./GraphCare-main/graphs/cond_proc_drug/CCSCM_CCSPROC_ATC3/rel2id.json"
+  code_to_name_path: "./data/code_to_name.json"
+
+rag:
+  backend: drkg
+  drkg_root: /data/drkg
+  drkg_name_emb_cache: /data/drkg/name_index.pkl
+  # UMLS backend (requires NLM license):
+  umls_emb_path:     "./GraphCare-main/data/umls_ent_emb_.pkl"
+  umls_names_path:   "./GraphCare-main/KG_mapping/umls/concept_names.txt"
+  triple_store_path: "./GraphCare-main/KG_mapping/global_node_triple_store.txt"
+
+# ── KG completion (retrieval-constrained, federated) ───────────────────────
+# Scores AgenticRAG's retrieved candidate triples and keeps only plausible
+# ones, instead of merging everything retrieved. Set enabled: false to run
+# the ablation with KGC off (behaves exactly as the pre-KGC pipeline).
+kgc:
+  enabled: true
+  dim: 64                          # embedding dimension, FMRAG_KGC_DIM
+  threshold: 0.5                   # plausibility cutoff, FMRAG_KGC_THRESHOLD
+  neg_samples: 10                  # negative samples per positive during local training
+  mask_ratio: 0.1                  # held-out edge fraction for per-round completion eval
+  eval_candidate_pool: 50          # candidates per held-out triple in Hits@k/MRR eval
+
+# ── Drug hypothesis generation (Contribution C5) ───────────────────────────
+# Defaults OFF — this is a separate, optional addition. Turn on only after
+# confirming the base FL + KGC + ADE pipeline runs cleanly first.
+# Requires RAG to be initialised (uses AgenticRAG's UMLS resolver to map
+# CCS/ATC codes to UMLS CUIs, since this repo has no direct crosswalk file).
+hypothesis:
+  enabled: true
+  kg_backend: "umls"                # "umls" | "drkg" — defaults to matching rag.backend if omitted
+  drkg_root: "/data/drkg"           # used when kg_backend: drkg
+  umls_path: "./GraphCare-main/KG_mapping/umls/umls.csv"
+  atc_path: "./GraphCare-main/resources/ATC.csv"
+  atc2umls_path: "./GraphCare-main/KG_mapping/ATC_to_UMLS.csv"
+  top_k: 5
+  max_hops: 3
+  log_path: "./data/local/hypotheses_log.jsonl"   # LOCAL ONLY — never transmitted via FL
+
+fl:
+  server_host: "100.105.131.115"
+  server_port: 8080
+  # These are overridden by cpu/gpu sections above when auto-detected
+  local_epochs: 1
+  batch_size: 4
+  learning_rate: 0.0002
+  ade_loss_weight: 1.0    # multitask only: weight on the ADE head's loss relative to the disease head (FMRAG_ADE_LOSS_WEIGHT)
+  checkpoint_path: "/var/fmrag/checkpoints/last_global_state.pt"   # local cache for offline inference if the server is unreachable
